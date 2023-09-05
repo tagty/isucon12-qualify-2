@@ -11,6 +11,12 @@ build:
 		cd /home/isucon/webapp/go/cmd/isuports; \
 		/usr/bin/go build -o isuports"
 
+go-deploy:
+	scp ./webapp/go/isuports isucon12-qualify-1:/home/isucon/webapp/go/
+
+go-deploy-dir:
+	scp -r ./webapp/go isucon12-qualify-1:/home/isucon/webapp/
+
 restart:
 	ssh isucon12-qualify-1 "sudo systemctl restart isuports.service"
 
@@ -60,7 +66,7 @@ alp:
 .PHONY: pprof
 pprof:
 	ssh isucon12-qualify-1 " \
-		/usr/bin/go tool pprof -seconds=75 /home/isucon/webapp/go/cmd/isuports/isuports http://localhost:6060/debug/pprof/profile"
+		/usr/bin/go tool pprof -seconds=75 /home/isucon/webapp/go/isuports http://localhost:6060/debug/pprof/profile"
 
 pprof-show:
 	$(eval latest := $(shell ssh isucon12-qualify-1 "ls -rt ~/pprof/ | tail -n 1"))
