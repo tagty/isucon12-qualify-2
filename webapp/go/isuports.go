@@ -1069,6 +1069,8 @@ func competitionScoreHandler(c echo.Context) error {
 	defer fl.Close()
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
+	m := make(map[string]bool)
+	playerIDs := []string{}
 	for {
 		rowNum++
 		row, err := r.Read()
@@ -1082,15 +1084,9 @@ func competitionScoreHandler(c echo.Context) error {
 			return fmt.Errorf("row must have two columns: %#v", row)
 		}
 		playerID, scoreStr := row[0], row[1]
-		if _, err := retrievePlayer(ctx, tenantDB, playerID); err != nil {
-			// 存在しない参加者が含まれている
-			if errors.Is(err, sql.ErrNoRows) {
-				return echo.NewHTTPError(
-					http.StatusBadRequest,
-					fmt.Sprintf("player not found: %s", playerID),
-				)
-			}
-			return fmt.Errorf("error retrievePlayer: %w", err)
+		if !m[playerID] {
+			m[playerID] = true
+			playerIDs = append(playerIDs, playerID)
 		}
 		var score int64
 		if score, err = strconv.ParseInt(scoreStr, 10, 64); err != nil {
@@ -1116,6 +1112,28 @@ func competitionScoreHandler(c echo.Context) error {
 		})
 	}
 
+	sql, params, err := sqlx.In(
+		"SELECT COUNT(*) as count FROM player WHERE id IN (?)",
+		playerIDs,
+	)
+	if err != nil {
+		return fmt.Errorf("error Select count player: %w", err)
+	}
+	var count int
+	if err := tenantDB.Get(
+		&count,
+		sql,
+		params...,
+	); err != nil {
+		return fmt.Errorf("error Select count player: %w", err)
+	}
+	if count != len(playerIDs) {
+		return echo.NewHTTPError(
+			http.StatusBadRequest,
+			fmt.Sprintf("players not found: %d, %d", count, len(playerIDs)),
+		)
+	}
+
 	if _, err := tenantDB.ExecContext(
 		ctx,
 		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
@@ -1124,6 +1142,7 @@ func competitionScoreHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
+
 	if _, err := tenantDB.NamedExecContext(
 		ctx,
 		"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
