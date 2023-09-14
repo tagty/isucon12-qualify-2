@@ -611,6 +611,10 @@ type TenantsBillingHandlerResult struct {
 	Tenants []TenantWithBilling `json:"tenants"`
 }
 
+type BillingYenRow struct {
+	BillingYen sql.NullInt64 `db:"billing_yen"`
+}
+
 // SaaS管理者用API
 // テナントごとの課金レポートを最大10件、テナントのid降順で取得する
 // GET /api/admin/tenants/billing
@@ -668,22 +672,22 @@ func tenantsBillingHandler(c echo.Context) error {
 				return fmt.Errorf("failed to connectToTenantDB: %w", err)
 			}
 			defer tenantDB.Close()
-			cs := []CompetitionRow{}
-			if err := tenantDB.SelectContext(
-				ctx,
-				&cs,
-				"SELECT * FROM competition WHERE tenant_id=?",
+
+			var by BillingYenRow
+			if err := adminDB.GetContext(
+				context.Background(),
+				&by,
+				"SELECT sum(billing_yen) as billing_yen FROM billing_report WHERE tenant_id = ?",
 				t.ID,
-			); err != nil {
-				return fmt.Errorf("failed to Select competition: %w", err)
+			); err != nil && err != sql.ErrNoRows {
+				return fmt.Errorf("failed to Select billing_report: tenant_id=%d, %w", t.ID, err)
 			}
-			for _, comp := range cs {
-				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, comp.ID)
-				if err != nil {
-					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
-				}
-				tb.BillingYen += report.BillingYen
+			if err == sql.ErrNoRows {
+				tb.BillingYen = 0
+			} else {
+				tb.BillingYen = by.BillingYen.Int64
 			}
+
 			tenantBillings = append(tenantBillings, tb)
 			return nil
 		}(t)
@@ -969,6 +973,17 @@ func competitionFinishHandler(c echo.Context) error {
 			now, now, id, err,
 		)
 	}
+
+	report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, id)
+	if err != nil {
+		return fmt.Errorf("error billingReportByCompetition: %w", err)
+	}
+	go adminDB.ExecContext(
+		ctx,
+		"INSERT INTO billing_report (tenant_id, competition_id, competition_title, player_count, visitor_count, billing_player_yen, billing_visitor_yen, billing_yen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		v.tenantID, id, report.CompetitionTitle, report.PlayerCount, report.VisitorCount, report.BillingPlayerYen, report.BillingVisitorYen, report.BillingYen,
+	)
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
@@ -1141,6 +1156,17 @@ type BillingHandlerResult struct {
 	Reports []BillingReport `json:"reports"`
 }
 
+type BillingReportRow struct {
+	TenantID          int64  `db:"tenant_id"`
+	CompetitionID     string `db:"competition_id"`
+	CompetitionTitle  string `db:"competition_title"`
+	PlayerCount       int64  `db:"player_count"`
+	VisitorCount      int64  `db:"visitor_count"`
+	BillingPlayerYen  int64  `db:"billing_player_yen"`
+	BillingVisitorYen int64  `db:"billing_visitor_yen"`
+	BillingYen        int64  `db:"billing_yen"`
+}
+
 // テナント管理者向けAPI
 // GET /api/organizer/billing
 // テナント内の課金レポートを取得する
@@ -1171,11 +1197,39 @@ func billingHandler(c echo.Context) error {
 	}
 	tbrs := make([]BillingReport, 0, len(cs))
 	for _, comp := range cs {
-		report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, comp.ID)
-		if err != nil {
-			return fmt.Errorf("error billingReportByCompetition: %w", err)
+		var br BillingReportRow
+		if err := adminDB.GetContext(
+			ctx,
+			&br,
+			"SELECT * FROM billing_report WHERE tenant_id = ? AND competition_id = ?",
+			v.tenantID,
+			comp.ID,
+		); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("failed to Select billing_report: tenant_id=%d, competition_id=%s, %w", v.tenantID, comp.ID, err)
 		}
-		tbrs = append(tbrs, *report)
+		if err == sql.ErrNoRows {
+			report := &BillingReport{
+				CompetitionID:     comp.ID,
+				CompetitionTitle:  comp.Title,
+				PlayerCount:       0,
+				VisitorCount:      0,
+				BillingPlayerYen:  0,
+				BillingVisitorYen: 0,
+				BillingYen:        0,
+			}
+			tbrs = append(tbrs, *report)
+		} else {
+			report := &BillingReport{
+				CompetitionID:     comp.ID,
+				CompetitionTitle:  comp.Title,
+				PlayerCount:       br.PlayerCount,
+				VisitorCount:      br.VisitorCount,
+				BillingPlayerYen:  br.BillingPlayerYen,
+				BillingVisitorYen: br.BillingVisitorYen,
+				BillingYen:        br.BillingYen,
+			}
+			tbrs = append(tbrs, *report)
+		}
 	}
 
 	res := SuccessResult{
@@ -1618,6 +1672,7 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
