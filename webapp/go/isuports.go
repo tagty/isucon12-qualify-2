@@ -987,6 +987,15 @@ func competitionFinishHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
+type RankingRow struct {
+	TenantID          int64  `db:"tenant_id"`
+	CompetitionID     string `db:"competition_id"`
+	Rank              int64  `db:"rank"`
+	Score             int64  `db:"score"`
+	PlayerID          string `db:"player_id"`
+	PlayerDisplayName string `db:"player_display_name"`
+}
+
 type ScoreHandlerResult struct {
 	Rows int64 `json:"rows"`
 }
@@ -1144,6 +1153,74 @@ func competitionScoreHandler(c echo.Context) error {
 	err = tx.Commit()
 	if err != nil {
 		return fmt.Errorf("error tx Commit: %w", err)
+	}
+
+	pss := []PlayerScorePlayerRow{}
+	if err := tenantDB.SelectContext(
+		ctx,
+		&pss,
+		`SELECT
+			player_score.*,
+			player.display_name
+		FROM
+			player_score
+			JOIN player ON player.id = player_score.player_id
+		WHERE
+			player_score.tenant_id = ?
+			AND competition_id = ?
+		ORDER BY
+			row_num DESC;`,
+		v.tenantID,
+		competitionID,
+	); err != nil {
+		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+	}
+	ranks := make([]CompetitionRank, 0, len(pss))
+	scoredPlayerSet := make(map[string]struct{}, len(pss))
+	for _, ps := range pss {
+		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
+		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
+		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
+			continue
+		}
+		scoredPlayerSet[ps.PlayerID] = struct{}{}
+		ranks = append(ranks, CompetitionRank{
+			Score:             ps.Score,
+			PlayerID:          ps.PlayerID,
+			PlayerDisplayName: ps.DisplayName,
+			RowNum:            ps.RowNum,
+		})
+	}
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].Score == ranks[j].Score {
+			return ranks[i].RowNum < ranks[j].RowNum
+		}
+		return ranks[i].Score > ranks[j].Score
+	})
+
+	rs := make([]RankingRow, 0, 100)
+	for i, rank := range ranks {
+		rs = append(rs, RankingRow{
+			TenantID:          v.tenantID,
+			CompetitionID:     competitionID,
+			Rank:              int64(i + 1),
+			Score:             rank.Score,
+			PlayerID:          rank.PlayerID,
+			PlayerDisplayName: rank.PlayerDisplayName,
+		})
+		if len(rs) >= 100 {
+			break
+		}
+	}
+
+	if _, err := adminDB.NamedExecContext(
+		ctx,
+		"INSERT INTO ranking (tenant_id, competition_id, `rank`, score, player_id, player_display_name) VALUES(:tenant_id, :competition_id, :rank, :score, :player_id, :player_display_name) ON DUPLICATE KEY UPDATE score = VALUES(score), player_id = VALUES(player_id), player_display_name = VALUES(player_display_name)",
+		rs,
+	); err != nil {
+		return fmt.Errorf(
+			"error Insert ranking: %w", err,
+		)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
@@ -1418,58 +1495,26 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
-	pss := []PlayerScorePlayerRow{}
-	if err := tenantDB.SelectContext(
+	rs := []RankingRow{}
+	if err := adminDB.SelectContext(
 		ctx,
-		&pss,
-		`SELECT
-			player_score.*,
-			player.display_name
-		FROM
-			player_score
-			JOIN player ON player.id = player_score.player_id
-		WHERE
-			player_score.tenant_id = ?
-			AND competition_id = ?
-		ORDER BY
-			row_num DESC;`,
+		&rs,
+		"SELECT * FROM ranking WHERE tenant_id = ? AND competition_id = ?",
 		tenant.ID,
 		competitionID,
 	); err != nil {
-		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
+		return fmt.Errorf("error Select ranking: %w", err)
 	}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	scoredPlayerSet := make(map[string]struct{}, len(pss))
-	for _, ps := range pss {
-		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
-		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
-			continue
-		}
-		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		ranks = append(ranks, CompetitionRank{
-			Score:             ps.Score,
-			PlayerID:          ps.PlayerID,
-			PlayerDisplayName: ps.DisplayName,
-			RowNum:            ps.RowNum,
-		})
-	}
-	sort.Slice(ranks, func(i, j int) bool {
-		if ranks[i].Score == ranks[j].Score {
-			return ranks[i].RowNum < ranks[j].RowNum
-		}
-		return ranks[i].Score > ranks[j].Score
-	})
 	pagedRanks := make([]CompetitionRank, 0, 100)
-	for i, rank := range ranks {
-		if int64(i) < rankAfter {
+	for i, r := range rs {
+		if int64(i+1) < rankAfter {
 			continue
 		}
 		pagedRanks = append(pagedRanks, CompetitionRank{
 			Rank:              int64(i + 1),
-			Score:             rank.Score,
-			PlayerID:          rank.PlayerID,
-			PlayerDisplayName: rank.PlayerDisplayName,
+			Score:             r.Score,
+			PlayerID:          r.PlayerID,
+			PlayerDisplayName: r.PlayerDisplayName,
 		})
 		if len(pagedRanks) >= 100 {
 			break
