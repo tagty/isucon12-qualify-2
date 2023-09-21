@@ -82,6 +82,14 @@ func tenantDBPath(id int64) string {
 // テナントDBに接続する
 func connectToTenantDB(id int64) (*sqlx.DB, error) {
 	p := tenantDBPath(id)
+
+	_, err := os.Stat(p)
+	if os.IsNotExist(err) {
+		if err := createTenantDB(id); err != nil {
+			return nil, fmt.Errorf("error createTenantDB: id=%d %w", id, err)
+		}
+	}
+
 	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=rw", p))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tenant DB: %w", err)
@@ -92,7 +100,6 @@ func connectToTenantDB(id int64) (*sqlx.DB, error) {
 // テナントDBを新規に作成する
 func createTenantDB(id int64) error {
 	p := tenantDBPath(id)
-
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("sqlite3 %s < %s", p, tenantDBSchemaFilePath))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to exec sqlite3 %s < %s, out=%s: %w", p, tenantDBSchemaFilePath, string(out), err)
@@ -485,12 +492,6 @@ func tenantsAddHandler(c echo.Context) error {
 	id, err := insertRes.LastInsertId()
 	if err != nil {
 		return fmt.Errorf("error get LastInsertId: %w", err)
-	}
-	// NOTE: 先にadminDBに書き込まれることでこのAPIの処理中に
-	//       /api/admin/tenants/billingにアクセスされるとエラーになりそう
-	//       ロックなどで対処したほうが良さそう
-	if err := createTenantDB(id); err != nil {
-		return fmt.Errorf("error createTenantDB: id=%d name=%s %w", id, name, err)
 	}
 
 	res := TenantsAddHandlerResult{
