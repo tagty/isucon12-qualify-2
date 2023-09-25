@@ -5,6 +5,15 @@ deploy:
 		git fetch; \
 		git checkout $(BRANCH); \
 		git reset --hard origin/$(BRANCH)"
+	scp -r ./webapp/go isucon12-qualify-2:/home/isucon/webapp/
+	scp -r ./webapp/go isucon12-qualify-3:/home/isucon/webapp/
+	ssh isucon12-qualify-2 " \
+		cd /home/isucon; \
+		rm -f webapp/tenant_db/*.db; \
+		cp -r initial_data/*.db webapp/tenant_db/"
+	ssh isucon12-qualify-3 " \
+		rm -f webapp/tenant_db/*.db; \
+		cp -r initial_data/*.db webapp/tenant_db/"
 
 build:
 	ssh isucon12-qualify-1 " \
@@ -19,6 +28,8 @@ go-deploy-dir:
 
 restart:
 	ssh isucon12-qualify-1 "sudo systemctl restart isuports.service"
+	ssh isucon12-qualify-2 "sudo systemctl restart isuports.service"
+	ssh isucon12-qualify-3 "sudo systemctl restart isuports.service"
 
 mysql-deploy:
 	ssh isucon12-qualify-1 "sudo dd of=/etc/mysql/mysql.conf.d/mysqld.cnf" < ./etc/mysql/mysql.conf.d/mysqld.cnf
@@ -31,6 +42,7 @@ mysql-restart:
 
 nginx-deploy:
 	ssh isucon12-qualify-1 "sudo dd of=/etc/nginx/nginx.conf" < ./etc/nginx/nginx.conf
+	ssh isucon12-qualify-1 "sudo dd of=/etc/nginx/sites-available/isuports.conf" < ./etc/nginx/sites-available/isuports.conf
 
 nginx-rotate:
 	ssh isucon12-qualify-1 "sudo rm -f /var/log/nginx/access.log"
