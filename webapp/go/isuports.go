@@ -426,6 +426,18 @@ type PlayerScorePlayerRow struct {
 	DisplayName   string `db:"display_name"`
 }
 
+type PlayerScoreCompetitionRow struct {
+	TenantID      int64  `db:"tenant_id"`
+	ID            string `db:"id"`
+	PlayerID      string `db:"player_id"`
+	CompetitionID string `db:"competition_id"`
+	Title         string `db:"title"`
+	Score         int64  `db:"score"`
+	RowNum        int64  `db:"row_num"`
+	CreatedAt     int64  `db:"created_at"`
+	UpdatedAt     int64  `db:"updated_at"`
+}
+
 // 排他ロックのためのファイル名を生成する
 func lockFilePath(id int64) string {
 	tenantDBDir := getEnv("ISUCON_TENANT_DB_DIR", "../tenant_db")
@@ -1374,14 +1386,25 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
 
-	pss := make([]PlayerScoreRow, 0, len(cs))
+	psds := []PlayerScoreDetail{}
 	for _, c := range cs {
-		ps := PlayerScoreRow{}
+		psc := PlayerScoreCompetitionRow{}
 		if err := tenantDB.GetContext(
 			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
+			&psc,
+			`SELECT
+				player_score.*,
+				competition.title
+			FROM
+				player_score
+				JOIN competition ON competition.id = player_score.competition_id
+			WHERE
+				player_score.tenant_id = ?
+				AND competition_id = ?
+				AND player_id = ?
+			ORDER BY
+				row_num DESC
+			LIMIT 1;`,
 			v.tenantID,
 			c.ID,
 			p.ID,
@@ -1392,18 +1415,10 @@ func playerHandler(c echo.Context) error {
 			}
 			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
 		}
-		pss = append(pss, ps)
-	}
 
-	psds := make([]PlayerScoreDetail, 0, len(pss))
-	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
-		}
 		psds = append(psds, PlayerScoreDetail{
-			CompetitionTitle: comp.Title,
-			Score:            ps.Score,
+			CompetitionTitle: psc.Title,
+			Score:            psc.Score,
 		})
 	}
 
