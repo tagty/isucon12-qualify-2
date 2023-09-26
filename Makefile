@@ -7,6 +7,8 @@ deploy:
 		git reset --hard origin/$(BRANCH)"
 	scp -r ./webapp/go isucon12-qualify-2:/home/isucon/webapp/
 	scp -r ./webapp/go isucon12-qualify-3:/home/isucon/webapp/
+	scp ./webapp/sql/player_score.sql isucon12-qualify-2:/home/isucon/webapp/sql/
+	scp ./webapp/sql/player_score.sql isucon12-qualify-3:/home/isucon/webapp/sql/
 	ssh isucon12-qualify-2 " \
 		cd /home/isucon; \
 		rm -f webapp/tenant_db/*.db; \
